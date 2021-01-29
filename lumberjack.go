@@ -36,7 +36,7 @@ import (
 )
 
 const (
-	backupTimeFormat = "2006-01-02T15-04-05.000"
+	BackupTimeFormat = "2006-01-02T15-04-05.000"
 	compressSuffix   = ".gz"
 	defaultMaxSize   = 100
 )
@@ -81,6 +81,11 @@ type Logger struct {
 	// in the same directory.  It uses <processname>-lumberjack.log in
 	// os.TempDir() if empty.
 	Filename string `json:"filename" yaml:"filename"`
+
+	// CurrentFileName is current file name used to write log.
+	// where MaxSize arrived, no file will rename and current file closed then
+	// a new file will be create with timestamp to continue write log.
+	CurrentFileName string `json:"current_file_name" yaml:"current_file_name"`
 
 	// MaxSize is the maximum size in megabytes of the log file before it gets
 	// rotated. It defaults to 100 megabytes.
@@ -211,23 +216,8 @@ func (l *Logger) openNew() error {
 		return fmt.Errorf("can't make directories for new logfile: %s", err)
 	}
 
-	name := l.filename()
+	name := backupName(l.filename(), l.LocalTime)
 	mode := os.FileMode(0600)
-	info, err := osStat(name)
-	if err == nil {
-		// Copy the mode off the old logfile.
-		mode = info.Mode()
-		// move the existing file
-		newname := backupName(name, l.LocalTime)
-		if err := os.Rename(name, newname); err != nil {
-			return fmt.Errorf("can't rename log file: %s", err)
-		}
-
-		// this is a no-op anywhere but linux
-		if err := chown(name, info); err != nil {
-			return err
-		}
-	}
 
 	// we use truncate here because this should only get called when we've moved
 	// the file ourselves. if someone else creates the file in the meantime,
@@ -238,6 +228,7 @@ func (l *Logger) openNew() error {
 	}
 	l.file = f
 	l.size = 0
+	l.CurrentFileName = name
 	return nil
 }
 
@@ -254,7 +245,7 @@ func backupName(name string, local bool) string {
 		t = t.UTC()
 	}
 
-	timestamp := t.Format(backupTimeFormat)
+	timestamp := t.Format(BackupTimeFormat)
 	return filepath.Join(dir, fmt.Sprintf("%s-%s%s", prefix, timestamp, ext))
 }
 
@@ -264,7 +255,7 @@ func backupName(name string, local bool) string {
 func (l *Logger) openExistingOrNew(writeLen int) error {
 	l.mill()
 
-	filename := l.filename()
+	filename := l.currentFilename()
 	info, err := osStat(filename)
 	if os.IsNotExist(err) {
 		return l.openNew()
@@ -295,6 +286,17 @@ func (l *Logger) filename() string {
 	}
 	name := filepath.Base(os.Args[0]) + "-lumberjack.log"
 	return filepath.Join(os.TempDir(), name)
+}
+
+// currentFilename generates the name of the logfile from the current time.
+func (l *Logger) currentFilename() string {
+	if l.CurrentFileName != "" {
+		return l.CurrentFileName
+	} else {
+		var currentFilename = backupName(l.Filename, l.LocalTime)
+		l.CurrentFileName = currentFilename
+		return currentFilename
+	}
 }
 
 // millRunOnce performs compression and removal of stale log files.
@@ -438,7 +440,7 @@ func (l *Logger) timeFromName(filename, prefix, ext string) (time.Time, error) {
 		return time.Time{}, errors.New("mismatched extension")
 	}
 	ts := filename[len(prefix) : len(filename)-len(ext)]
-	return time.Parse(backupTimeFormat, ts)
+	return time.Parse(BackupTimeFormat, ts)
 }
 
 // max returns the maximum size in bytes of log files before rolling.
